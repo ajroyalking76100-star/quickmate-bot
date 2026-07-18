@@ -1,89 +1,104 @@
 import os
-import threading
-import http.server
-import socketserver
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters
+)
 from groq import Groq
+from resume_handler import resume_command, handle_resume_text
+from photo_handler import handle_photo
 
-# Naye modules ko import kiya
-from resume_handler import create_resume, generate_resume_pdf
-from photo_handler import photo_receive, photo_callback_handler
+# Logging setup
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-# 1. Environment Variables loading
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROQ_KEY = os.getenv("GROQ_API_KEY")
+# Initialize Groq client
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# 2. Port Binding for Render
-PORT = int(os.getenv("PORT", 8080))
-
-def run_health_server():
-    class HealthHandler(http.server.SimpleHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"Bot is alive!")
-
-    with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
-        print(f"Serving health check on port {PORT}")
-        httpd.serve_forever()
-
-# Start the health check web server in a background thread
-threading.Thread(target=run_health_server, daemon=True).start()
-
-# 3. Initialize Groq Client
-groq_client = Groq(api_key=GROQ_KEY)
-
-# 4. Telegram Bot Handlers
+# /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Hello! Main aapka AI assistant hoon. 🤖\n\n"
-        "Aap mujhse chat kar sakte hain, /resume dabakar resume bana sakte hain, ya koi photo bhejkar use edit kar sakte hain!"
+        "Hello! Main aapka AI Assistant hoon.\n\n"
+        "✨ Naye features use karne ke liye ye commands try karein:\n"
+        "📝 /resume - AI Professional Resume banane ke liye\n"
+        "📄 /pdf - PDF aur Image tools (Image to PDF, Word, Resize) ke liye"
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    
-    # Check karien ki kahin user resume ki details toh nahi bhej raha
-    if "NAME:" in user_text.upper():
-        success = await generate_resume_pdf(update, context)
-        if success:
-            return
+# /pdf command menu
+async def pdf_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🖼️ Image to PDF", callback_data="img_to_pdf")],
+        [InlineKeyboardButton("📝 Image to Word", callback_data="img_to_word")],
+        [InlineKeyboardButton("📐 Resize PDF", callback_data="resize_pdf")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Niche diye gaye options me se select karein ki aap kya karna chahte hain:",
+        reply_markup=reply_markup
+    )
 
-    # Normal AI Chat Functionality
+# Handle button clicks from /pdf menu
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # Store user choice in user_data
+    context.user_data['pdf_action'] = query.data
+    
+    if query.data == "img_to_pdf":
+        await query.edit_message_text("Aapne **Image to PDF** select kiya hai. Ab please wo Image send karein jise PDF banana hai.")
+    elif query.data == "img_to_word":
+        await query.edit_message_text("Aapne **Image to Word** select kiya hai. Ab please wo Image send karein jise Word doc me badalna hai.")
+    elif query.data == "resize_pdf":
+        await query.edit_message_text("Aapne **Resize PDF** select kiya hai. Ab please wo PDF file send karein jise resize karna hai.")
+
+# Chat text handling with Groq AI
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Check if user is typing resume details
+    if context.user_data.get('state') == 'AWAITING_RESUME_DETAILS':
+        await handle_resume_text(update, context)
+        return
+
+    user_text = update.message.text
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": user_text}]
         )
-        reply = completion.choices[0].message.content
-        await update.message.reply_text(reply)
+        bot_response = completion.choices[0].message.content
+        await update.message.reply_text(bot_response)
     except Exception as e:
-        await update.message.reply_text("Sorry, abhi main reply nahi kar pa raha hoon.")
-        print(f"Groq Error: {e}")
+        logging.error(f"Groq API Error: {e}")
+        await update.message.reply_text("Sorry, mujhe response generate karne me dikkat ho rahi hai.")
 
 def main():
-    if not TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN environment variable missing!")
-        
-    application = Application.builder().token(TOKEN).build()
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise ValueError("TELEGRAM_BOT_TOKEN environment variable nahi mila!")
 
-    # Saare Handlers register karein
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("resume", create_resume))
-    
-    # Photo received handle karne ke liye
-    application.add_handler(MessageHandler(filters.PHOTO, photo_receive))
-    
-    # Photo ke buttons click handle karne ke liye
-    application.add_handler(CallbackQueryHandler(photo_callback_handler))
-    
-    # Normal text messages ke liye
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app = ApplicationBuilder().token(token).build()
 
-    print("Bot is starting polling...")
-    application.run_polling()
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("resume", resume_command))
+    app.add_handler(CommandHandler("pdf", pdf_menu))  # Naya /pdf command handler
+    
+    # Callback queries for buttons
+    app.add_handler(CallbackQueryHandler(button_click))
 
-if __name__ == "__main__":
+    # Messages (Photos and Texts)
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    print("Bot starting...")
+    app.run_polling()
+
+if __name__ == '__main__':
     main()
