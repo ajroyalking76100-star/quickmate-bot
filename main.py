@@ -26,11 +26,14 @@ groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Naye user ke liye memory initialize karna
+    context.user_data['chat_history'] = []
     await update.message.reply_text(
         "Hello! Main aapka AI Assistant hoon.\n\n"
         "✨ Naye features use karne ke liye ye commands try karein:\n"
         "📝 /resume - AI Professional Resume banane ke liye\n"
-        "📄 /pdf - PDF aur Image tools (Image to PDF, Word, Resize) ke liye"
+        "📄 /pdf - PDF aur Image tools (Image to PDF, Word, Resize) ke liye\n\n"
+        "🤖 Ab mujhe purani baatein bhi yaad rahengi! Aap kuch bhi pooch sakte hain."
     )
 
 # /pdf command menu
@@ -51,7 +54,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # Check if click is from photo editing menu
     if query.data.startswith('edit_'):
         await photo_callback_handler(update, context)
         return
@@ -139,19 +141,39 @@ async def handle_resume_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
     context.user_data['state'] = None
 
-# Chat text handling with Groq AI
+# Chat text handling WITH MEMORY 🧠
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('state') == 'AWAITING_RESUME_DETAILS':
         await handle_resume_text(update, context)
         return
 
     user_text = update.message.text
+    
+    # Agar chat history list pehle se nahi bani toh banao
+    if 'chat_history' not in context.user_data:
+        context.user_data['chat_history'] = []
+        
+    history = context.user_data['chat_history']
+    
+    # Naya message history me add karo
+    history.append({"role": "user", "content": user_text})
+    
+    # Memory zyada badi na ho, isliye sirf aakhri 10 messages yaad rakhein (5 sawal + 5 jawab)
+    if len(history) > 10:
+        history = history[-10:]
+        context.user_data['chat_history'] = history
+
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": user_text}]
+            messages=history # Pura ka pura conversation bhej rahe hain
         )
         bot_response = completion.choices[0].message.content
+        
+        # Bot ka response bhi history me save karo taaki agli baar yaad rahe
+        history.append({"role": "assistant", "content": bot_response})
+        context.user_data['chat_history'] = history
+        
         await update.message.reply_text(bot_response)
     except Exception as e:
         logging.error(f"Groq API Error: {e}")
@@ -177,3 +199,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
