@@ -1,11 +1,11 @@
 import os
-import asyncio
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
 import requests
-from aiohttp import web
 
-# Tokens jo aapne Environment Variables me set kiye hain
+# Render ke Environment Variables se automatic utha lega (Safe and Secure)
 BOT_TOKEN = os.environ.get("8837315359:AAEB29lySLlJLnf7XJgFUIuaZqkC8ICQjDU")
 GROQ_API_KEY = os.environ.get("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")
 
@@ -16,7 +16,7 @@ GROQ_MODELS = [
 ]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 QuickMate AI successfully live ho chuka hai! Puchiye kya puchna hai.")
+    await update.message.reply_text("🤖 QuickMate AI live ho chuka hai! Puchiye kya puchna hai.")
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -33,7 +33,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "messages": [{"role": "user", "content": user_text}]
         }
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=12)
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 bot_response = data['choices'][0]['message']['content']
@@ -44,39 +44,25 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if bot_response:
         await update.message.reply_text(bot_response)
     else:
-        await update.message.reply_text("⚠️ Groq ke backup models abhi temporary busy hain. Kripya ek baar fir se try karein.")
+        await update.message.reply_text("⚠️ Groq models abhi busy hain. Kripya thodi der baad try karein.")
 
-# Render ko khush rakhne ke liye simple web handler
-async def handle_web(request):
-    return web.Response(text="QuickMate AI is Active and Running!")
-
-async def main():
-    # 1. Web server setup Render ke port ke liye
-    app_web = web.Application()
-    app_web.router.add_get('/', handle_web)
-    runner = web.AppRunner(app_web)
-    await runner.setup()
-    
+# Render ka Port handle karne ke liye simple aur lightweight Web Server
+def run_health_server():
     port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"Web server started on port {port}")
+    server_address = ('', port)
+    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
+    print(f"Web server active on port {port}")
+    httpd.serve_forever()
 
-    # 2. Telegram Bot setup
+if __name__ == "__main__":
+    # Web server ko background thread me chalayein taaki Render port crash na kare
+    t = threading.Thread(target=run_health_server, daemon=True)
+    t.start()
+
+    # Telegram Bot ki official standard polling chalu karein
+    print("Starting bot polling...")
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-
-    # Dono ko ek sath loop me run karne ke liye safe method
-    async with application:
-        await application.initialize()
-        await application.start()
-        print("Bot polling initiated...")
-        await application.updater.start_polling()
-        
-        # Keep running infinitely loop
-        while True:
-            await asyncio.sleep(3600)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    
+    application.run_polling()
