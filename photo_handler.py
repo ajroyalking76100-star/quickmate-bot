@@ -43,7 +43,8 @@ async def photo_callback_handler(update, context):
     with open(output_path, 'rb') as edited_photo:
         await query.message.reply_photo(photo=edited_photo, caption=caption)
 
-    os.remove(file_path)
-    os.remove(output_path)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    if os.path.exists(output_path):
+        os.remove(output_path)
     context.user_data.pop('photo_path', None)
-
